@@ -1,0 +1,5 @@
+.idea/
+.git/
+*.exe
+web/node_modules/
+web/dist/
