@@ -38,7 +38,7 @@ func CompletionsHandler(c *gin.Context, state *config.State) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", err)})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check if streaming
 	contentType := resp.Header.Get("Content-Type")
@@ -136,7 +136,7 @@ func EmbeddingsHandler(c *gin.Context, state *config.State) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", err)})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -177,7 +177,7 @@ func MessagesHandler(c *gin.Context, state *config.State) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", err)})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if anthropicPayload.Stream {
 		handleAnthropicStream(c, resp)
@@ -279,7 +279,7 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response) {
 	// Scanner finished — check why
 	if err := scanner.Err(); err != nil {
 		log.Printf("[Stream] Scanner error: %v", err)
-		writeSSE(w, "error", map[string]interface{}{
+		_ = writeSSE(w, "error", map[string]interface{}{
 			"type": "error",
 			"error": map[string]string{
 				"type":    "stream_error",
@@ -289,7 +289,7 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response) {
 	} else {
 		// EOF without [DONE] — upstream closed unexpectedly
 		log.Printf("[Stream] Upstream closed without [DONE], sending message_stop")
-		writeSSE(w, "message_stop", map[string]string{"type": "message_stop"})
+		_ = writeSSE(w, "message_stop", map[string]string{"type": "message_stop"})
 	}
 	if hasFlusher {
 		flusher.Flush()
@@ -306,7 +306,7 @@ func writeSSE(w io.Writer, event string, data interface{}) error {
 }
 
 // CountTokensHandler provides a simplified token count estimation.
-func CountTokensHandler(c *gin.Context, state *config.State) {
+func CountTokensHandler(c *gin.Context, _ *config.State) {
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})

@@ -102,12 +102,6 @@ func StopInstance(accountID string) {
 	log.Printf("Instance stopped for account: %s", inst.Account.Name)
 }
 
-func GetInstance(accountID string) *ProxyInstance {
-	mu.RLock()
-	defer mu.RUnlock()
-	return instances[accountID]
-}
-
 func GetInstanceStatus(accountID string) string {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -133,16 +127,6 @@ func GetInstanceState(accountID string) *config.State {
 		return inst.State
 	}
 	return nil
-}
-
-func GetAllInstances() map[string]*ProxyInstance {
-	mu.RLock()
-	defer mu.RUnlock()
-	result := make(map[string]*ProxyInstance)
-	for k, v := range instances {
-		result[k] = v
-	}
-	return result
 }
 
 // GetAllCachedModels collects and deduplicates model entries from all running instances.
@@ -191,7 +175,7 @@ func GetUser(accountID string) (*CopilotUser, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var user CopilotUser
 	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
@@ -239,7 +223,7 @@ func refreshCopilotToken(state *config.State) error {
 	if err != nil {
 		return fmt.Errorf("failed to get copilot token: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -275,7 +259,7 @@ func fetchModels(state *config.State) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -319,34 +303,6 @@ var streamingHTTPClient = &http.Client{
 	// http.Client.Timeout applies to the ENTIRE request lifecycle including
 	// reading the response body. For streaming SSE, the body is read over
 	// minutes/hours, so any finite timeout here will kill long conversations.
-}
-
-func ProxyRequest(state *config.State, method, path string, body io.Reader, extraHeaders http.Header) (*http.Response, error) {
-	state.RLock()
-	baseURL := config.CopilotBaseURL(state.AccountType)
-	state.RUnlock()
-
-	url := baseURL + path
-
-	req, err := http.NewRequest(method, url, body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Check for vision content
-	hasVision := false
-	if body != nil {
-		// We can't peek into the body here, vision is set by caller
-	}
-
-	for k, v := range config.CopilotHeaders(state, hasVision) {
-		req.Header[k] = v
-	}
-	for k, v := range extraHeaders {
-		req.Header[k] = v
-	}
-
-	return streamingHTTPClient.Do(req)
 }
 
 func ProxyRequestWithBytes(state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool) (*http.Response, error) {
