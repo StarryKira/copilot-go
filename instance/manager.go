@@ -2,6 +2,7 @@ package instance
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -349,13 +350,17 @@ func ProxyRequest(state *config.State, method, path string, body io.Reader, extr
 }
 
 func ProxyRequestWithBytes(state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool) (*http.Response, error) {
+	return ProxyRequestWithBytesCtx(context.Background(), state, method, path, bodyBytes, extraHeaders, hasVision)
+}
+
+func ProxyRequestWithBytesCtx(ctx context.Context, state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool) (*http.Response, error) {
 	state.RLock()
 	baseURL := config.CopilotBaseURL(state.AccountType)
 	state.RUnlock()
 
 	url := baseURL + path
 
-	req, err := http.NewRequest(method, url, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}

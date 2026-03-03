@@ -172,7 +172,7 @@ func MessagesHandler(c *gin.Context, state *config.State) {
 		return
 	}
 
-	resp, err := ProxyRequestWithBytes(state, "POST", "/chat/completions", openaiBytes, nil, hasVision)
+	resp, err := ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, nil, hasVision)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", err)})
 		return
@@ -209,76 +209,100 @@ func handleAnthropicNonStream(c *gin.Context, resp *http.Response) {
 }
 
 func handleAnthropicStream(c *gin.Context, resp *http.Response) {
+	// If upstream returned an error, translate it properly instead of trying to SSE-parse
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[Stream] Upstream returned status %d: %s", resp.StatusCode, string(body))
+		c.Data(resp.StatusCode, "application/json", body)
+		return
+	}
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	c.Header("Transfer-Encoding", "chunked")
 	c.Status(http.StatusOK)
 
+	w := c.Writer
+	flusher, hasFlusher := w.(http.Flusher)
+	clientGone := c.Request.Context().Done()
+
 	state := anthropic.NewStreamState()
-	// Use a large buffer (10MB) to handle long context SSE chunks
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 10*1024*1024), 10*1024*1024)
 
-	c.Stream(func(w io.Writer) bool {
-		for scanner.Scan() {
-			line := scanner.Text()
+	for scanner.Scan() {
+		// Check if client disconnected
+		select {
+		case <-clientGone:
+			log.Printf("[Stream] Client disconnected, stopping stream")
+			return
+		default:
+		}
 
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
 
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				// Send message_stop
-				writeSSE(w, "message_stop", map[string]string{"type": "message_stop"})
-				// Flush final event
-				if flusher, ok := w.(http.Flusher); ok {
-					flusher.Flush()
-				}
-				return false
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			if err := writeSSE(w, "message_stop", map[string]string{"type": "message_stop"}); err != nil {
+				log.Printf("[Stream] Write error on message_stop: %v", err)
+				return
 			}
-
-			var chunk anthropic.ChatCompletionResponse
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				log.Printf("Failed to parse SSE chunk: %v", err)
-				continue
-			}
-
-			events := anthropic.TranslateChunkToAnthropicEvents(chunk, state)
-			for _, event := range events {
-				writeSSE(w, event.Event, event.Data)
-			}
-			// Flush after each batch of events to prevent buffering
-			if flusher, ok := w.(http.Flusher); ok {
+			if hasFlusher {
 				flusher.Flush()
 			}
+			return
 		}
-		// Check for scanner errors (e.g., buffer overflow, read errors)
-		if err := scanner.Err(); err != nil {
-			log.Printf("Anthropic stream scanner error: %v", err)
-			// Send an error event to the client so it knows something went wrong
-			writeSSE(w, "error", map[string]interface{}{
-				"type": "error",
-				"error": map[string]string{
-					"type":    "stream_error",
-					"message": fmt.Sprintf("upstream stream error: %v", err),
-				},
-			})
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
+
+		var chunk anthropic.ChatCompletionResponse
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			log.Printf("[Stream] Failed to parse SSE chunk: %v", err)
+			continue
+		}
+
+		events := anthropic.TranslateChunkToAnthropicEvents(chunk, state)
+		for _, event := range events {
+			if err := writeSSE(w, event.Event, event.Data); err != nil {
+				log.Printf("[Stream] Write error: %v", err)
+				return
 			}
 		}
-		return false
-	})
+		if hasFlusher {
+			flusher.Flush()
+		}
+	}
+
+	// Scanner finished — check why
+	if err := scanner.Err(); err != nil {
+		log.Printf("[Stream] Scanner error: %v", err)
+		writeSSE(w, "error", map[string]interface{}{
+			"type": "error",
+			"error": map[string]string{
+				"type":    "stream_error",
+				"message": fmt.Sprintf("upstream stream error: %v", err),
+			},
+		})
+	} else {
+		// EOF without [DONE] — upstream closed unexpectedly
+		log.Printf("[Stream] Upstream closed without [DONE], sending message_stop")
+		writeSSE(w, "message_stop", map[string]string{"type": "message_stop"})
+	}
+	if hasFlusher {
+		flusher.Flush()
+	}
 }
 
-func writeSSE(w io.Writer, event string, data interface{}) {
+func writeSSE(w io.Writer, event string, data interface{}) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return
+		return err
 	}
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(jsonData))
+	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(jsonData))
+	return err
 }
 
 // CountTokensHandler provides a simplified token count estimation.
