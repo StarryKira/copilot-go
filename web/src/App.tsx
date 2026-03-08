@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 
-import { api, getSessionToken, setSessionToken, type Account, type BatchUsageItem, type CopilotModel, type ModelMapping, type PoolConfig } from "./api"
+import { api, getSessionToken, setSessionToken, type Account, type BatchUsageItem, type CopilotModel, type ModelMapping, type PoolConfig, type ProxyUsageSnapshot } from "./api"
 import { AccountCard } from "./components/AccountCard"
 import { AddAccountForm } from "./components/AddAccountForm"
 import { useLocale, useT } from "./i18n"
@@ -114,10 +114,25 @@ function AccountList({ accounts, proxyPort, onRefresh }: { accounts: Array<Accou
   )
 }
 
+const strategyKeys = ["round-robin", "priority", "least-used", "smart"] as const
+const strategyLabelMap: Record<string, "roundRobin" | "priority" | "leastUsed" | "smart"> = {
+  "round-robin": "roundRobin",
+  priority: "priority",
+  "least-used": "leastUsed",
+  smart: "smart",
+}
+const strategyDescMap: Record<string, "roundRobinDesc" | "priorityDesc" | "leastUsedDesc" | "smartDesc"> = {
+  "round-robin": "roundRobinDesc",
+  priority: "priorityDesc",
+  "least-used": "leastUsedDesc",
+  smart: "smartDesc",
+}
+
 function PoolSettings({ pool, proxyPort, onChange }: { pool: PoolConfig; proxyPort: number; onChange: (p: PoolConfig) => void }) {
   const [saving, setSaving] = useState(false)
   const [keyVisible, setKeyVisible] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [rpmInput, setRpmInput] = useState(String(pool.rateLimitRPM ?? 0))
   const t = useT()
 
   const toggle = async () => { setSaving(true); try { const updated = await api.updatePool({ enabled: !pool.enabled }); onChange(updated) } finally { setSaving(false) } }
@@ -126,6 +141,16 @@ function PoolSettings({ pool, proxyPort, onChange }: { pool: PoolConfig; proxyPo
   const copyKey = () => { void navigator.clipboard.writeText(pool.apiKey); setCopied(true); setTimeout(() => setCopied(false), 1500) }
   const maskedKey = pool.apiKey?.length > 8 ? `${pool.apiKey.slice(0, 8)}${"•".repeat(24)}` : pool.apiKey ?? ""
   const proxyBase = `${window.location.protocol}//${window.location.hostname}:${proxyPort}`
+
+  const saveRPM = async () => {
+    const num = parseInt(rpmInput, 10)
+    if (isNaN(num) || num < 0) { setRpmInput(String(pool.rateLimitRPM ?? 0)); return }
+    if (num !== (pool.rateLimitRPM ?? 0)) {
+      setSaving(true)
+      try { const updated = await api.updatePool({ rateLimitRPM: num }); onChange(updated); setRpmInput(String(updated.rateLimitRPM ?? 0)) }
+      finally { setSaving(false) }
+    }
+  }
 
   return (
     <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: 16, marginBottom: 16 }}>
@@ -138,15 +163,29 @@ function PoolSettings({ pool, proxyPort, onChange }: { pool: PoolConfig; proxyPo
       </div>
       {pool.enabled && (
         <>
-          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-            {(["round-robin", "priority"] as const).map((s) => (
+          <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {strategyKeys.map((s) => (
               <button key={s} className={pool.strategy === s ? "primary" : undefined} onClick={() => void changeStrategy(s)} disabled={saving || pool.strategy === s} style={{ fontSize: 13 }}>
-                {s === "round-robin" ? t("roundRobin") : t("priority")}
+                {t(strategyLabelMap[s])}
               </button>
             ))}
             <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center", marginLeft: 4 }}>
-              {pool.strategy === "round-robin" ? t("roundRobinDesc") : t("priorityDesc")}
+              {t(strategyDescMap[pool.strategy] ?? "roundRobinDesc")}
             </span>
+          </div>
+          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+            <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>{t("rateLimitRPM")}</span>
+            <input
+              type="number"
+              value={rpmInput}
+              onChange={(e) => setRpmInput(e.target.value)}
+              onBlur={() => void saveRPM()}
+              onKeyDown={(e) => { if (e.key === "Enter") void saveRPM() }}
+              min={0}
+              style={{ width: 80, padding: "4px 8px", fontSize: 13 }}
+              placeholder={t("rateLimitPlaceholder")}
+            />
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("rateLimitRPMDesc")}</span>
           </div>
           <div style={{ marginTop: 12, padding: 10, background: "var(--bg)", borderRadius: "var(--radius)", fontSize: 12, fontFamily: "monospace", display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>{copied ? t("copied") : t("poolKey")}</span>
@@ -268,6 +307,79 @@ function BatchUsagePanel() {
                   <UsageCell used={totals.premiumUsed} total={totals.premiumTotal} unlimited={totals.premiumUnlimited} />
                   <UsageCell used={totals.chatUsed} total={totals.chatTotal} unlimited={totals.chatUnlimited} />
                   <UsageCell used={totals.compUsed} total={totals.compTotal} unlimited={totals.compUnlimited} />
+                  <td />
+                </tr>
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ProxyUsagePanel({ accounts }: { accounts: Array<Account> }) {
+  const [data, setData] = useState<Record<string, ProxyUsageSnapshot>>({})
+  const [loading, setLoading] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [fetched, setFetched] = useState(false)
+  const t = useT()
+
+  const fetchUsage = async () => {
+    setLoading(true)
+    try { const d = await api.getProxyUsage(); setData(d); setFetched(true); setOpen(true) }
+    catch (err) { console.error("Proxy usage fetch failed:", err) }
+    finally { setLoading(false) }
+  }
+
+  const accountNameMap: Record<string, string> = {}
+  for (const a of accounts) { accountNameMap[a.id] = a.name }
+
+  const entries = Object.entries(data).filter(([, snap]) => snap.totalRequests > 0)
+  const totalReqs = entries.reduce((sum, [, s]) => sum + s.totalRequests, 0)
+  const totalFailed = entries.reduce((sum, [, s]) => sum + s.failedRequests, 0)
+
+  const thStyle: React.CSSProperties = { padding: "8px 10px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }
+
+  return (
+    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: 16, marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>{t("proxyUsage")}</div>
+          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{t("proxyUsageDesc")}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="primary" onClick={() => void fetchUsage()} disabled={loading}>{loading ? t("refreshing") : t("queryProxyUsage")}</button>
+          {fetched && <button onClick={() => setOpen(!open)}>{open ? t("hide") : t("show")}</button>}
+        </div>
+      </div>
+      {open && fetched && (
+        <div style={{ marginTop: 12, overflowX: "auto" }}>
+          {entries.length === 0 ? (
+            <div style={{ color: "var(--text-muted)", fontSize: 13, padding: 16, textAlign: "center" }}>{t("noProxyUsage")}</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead><tr>
+                <th style={thStyle}>{t("colAccount")}</th>
+                <th style={thStyle}>{t("colTotalReqs")}</th>
+                <th style={thStyle}>{t("colFailedReqs")}</th>
+                <th style={thStyle}>{t("colLast429")}</th>
+              </tr></thead>
+              <tbody>
+                {entries.map(([accountId, snap]) => (
+                  <tr key={accountId} style={{ borderBottom: "1px solid var(--border)" }}>
+                    <td style={{ padding: "8px 10px", fontSize: 13, fontWeight: 500 }}>{accountNameMap[accountId] ?? accountId.slice(0, 8)}</td>
+                    <td style={{ padding: "8px 10px", fontSize: 12, fontFamily: "monospace" }}>{snap.totalRequests}</td>
+                    <td style={{ padding: "8px 10px", fontSize: 12, fontFamily: "monospace", color: snap.failedRequests > 0 ? "var(--red)" : undefined }}>{snap.failedRequests}</td>
+                    <td style={{ padding: "8px 10px", fontSize: 12, color: "var(--text-muted)" }}>
+                      {snap.last429At ? new Date(snap.last429At).toLocaleTimeString() : t("never")}
+                    </td>
+                  </tr>
+                ))}
+                <tr style={{ fontWeight: 600, borderTop: "2px solid var(--border)" }}>
+                  <td style={{ padding: "8px 10px", fontSize: 13 }}>{t("totalSummary")}</td>
+                  <td style={{ padding: "8px 10px", fontSize: 12, fontFamily: "monospace" }}>{totalReqs}</td>
+                  <td style={{ padding: "8px 10px", fontSize: 12, fontFamily: "monospace", color: totalFailed > 0 ? "var(--red)" : undefined }}>{totalFailed}</td>
                   <td />
                 </tr>
               </tbody>
@@ -471,6 +583,7 @@ function Dashboard() {
       </header>
       <PoolSettings pool={pool} proxyPort={proxyPort} onChange={setPool} />
       <BatchUsagePanel />
+      <ProxyUsagePanel accounts={accounts} />
       <ModelMappingPanel />
       {showForm && <AddAccountForm onComplete={handleAdd} onCancel={() => setShowForm(false)} />}
       {loading

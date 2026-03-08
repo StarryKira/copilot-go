@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"time"
 
@@ -170,8 +171,7 @@ func GetUser(accountID string) (*CopilotUser, error) {
 		req.Header[k] = v
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := defaultHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -185,26 +185,59 @@ func GetUser(accountID string) (*CopilotUser, error) {
 }
 
 func tokenRefreshLoop(inst *ProxyInstance) {
-	ticker := time.NewTicker(25 * time.Minute)
-	defer ticker.Stop()
+	const fallbackInterval = 25 * time.Minute
+	const minInterval = 30 * time.Second
 
 	for {
+		// Calculate next refresh time based on token expiry.
+		sleepDur := fallbackInterval
+		inst.State.RLock()
+		expiresAt := inst.State.TokenExpiresAt
+		inst.State.RUnlock()
+
+		if expiresAt > 0 {
+			remaining := time.Until(time.Unix(expiresAt, 0))
+			if remaining > 0 {
+				// Refresh at 80% of token lifetime (i.e., when 20% remains).
+				sleepDur = time.Duration(float64(remaining) * 0.8)
+				if sleepDur < minInterval {
+					sleepDur = minInterval
+				}
+			} else {
+				// Token already expired, refresh immediately.
+				sleepDur = 0
+			}
+		}
+
+		if sleepDur > 0 {
+			timer := time.NewTimer(sleepDur)
+			select {
+			case <-inst.stopChan:
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+
+		// Check stop again before doing work.
 		select {
 		case <-inst.stopChan:
 			return
-		case <-ticker.C:
-			if err := refreshCopilotToken(inst.State); err != nil {
-				log.Printf("Token refresh failed for %s: %v", inst.Account.Name, err)
-				mu.Lock()
-				inst.Status = "error"
-				inst.Error = err.Error()
-				mu.Unlock()
-				continue
-			}
-			// Also refresh models
-			if err := fetchModels(inst.State); err != nil {
-				log.Printf("Models refresh failed for %s: %v", inst.Account.Name, err)
-			}
+		default:
+		}
+
+		if err := refreshCopilotTokenWithRetry(inst.State, 3); err != nil {
+			log.Printf("Token refresh failed for %s: %v", inst.Account.Name, err)
+			mu.Lock()
+			inst.Status = "error"
+			inst.Error = err.Error()
+			mu.Unlock()
+			continue
+		}
+
+		// Also refresh models.
+		if err := fetchModels(inst.State); err != nil {
+			log.Printf("Models refresh failed for %s: %v", inst.Account.Name, err)
 		}
 	}
 }
@@ -218,8 +251,7 @@ func refreshCopilotToken(state *config.State) error {
 		req.Header[k] = v
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := defaultHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to get copilot token: %w", err)
 	}
@@ -237,8 +269,34 @@ func refreshCopilotToken(state *config.State) error {
 
 	state.Lock()
 	state.CopilotToken = tokenResp.Token
+	state.TokenExpiresAt = tokenResp.ExpiresAt
 	state.Unlock()
+
+	if tokenResp.ExpiresAt > 0 {
+		expiresIn := time.Until(time.Unix(tokenResp.ExpiresAt, 0))
+		log.Printf("Copilot token refreshed, expires in %v", expiresIn.Round(time.Second))
+	}
 	return nil
+}
+
+// refreshCopilotTokenWithRetry attempts token refresh with exponential backoff.
+// Retries up to maxRetries times on failure before giving up.
+func refreshCopilotTokenWithRetry(state *config.State, maxRetries int) error {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 2s, 8s, 18s (2 * attempt^2)
+			backoff := time.Duration(2*math.Pow(float64(attempt), 2)) * time.Second
+			log.Printf("Token refresh retry %d/%d after %v", attempt, maxRetries, backoff)
+			time.Sleep(backoff)
+		}
+		lastErr = refreshCopilotToken(state)
+		if lastErr == nil {
+			return nil
+		}
+		log.Printf("Token refresh attempt %d failed: %v", attempt+1, lastErr)
+	}
+	return fmt.Errorf("token refresh failed after %d attempts: %w", maxRetries+1, lastErr)
 }
 
 func fetchModels(state *config.State) error {
@@ -254,8 +312,7 @@ func fetchModels(state *config.State) error {
 		req.Header[k] = v
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := defaultHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -294,6 +351,8 @@ func fetchModels(state *config.State) error {
 // Connection-level timeouts are handled by the transport.
 var streamingHTTPClient = &http.Client{
 	Transport: &http.Transport{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
 		ResponseHeaderTimeout: 2 * time.Minute, // max wait for first response header
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -303,6 +362,18 @@ var streamingHTTPClient = &http.Client{
 	// http.Client.Timeout applies to the ENTIRE request lifecycle including
 	// reading the response body. For streaming SSE, the body is read over
 	// minutes/hours, so any finite timeout here will kill long conversations.
+}
+
+// defaultHTTPClient is a shared client for non-streaming requests (token refresh, models, etc.).
+var defaultHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:          50,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	},
 }
 
 func ProxyRequestWithBytes(state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool) (*http.Response, error) {

@@ -10,14 +10,13 @@ const (
 	CopilotVersion = "0.26.7"
 	GithubClientID = "Iv1.b507a08c87ecfe98"
 
-	CopilotChatURL        = "https://api.individual.githubcopilot.com"
+	CopilotChatURL         = "https://api.individual.githubcopilot.com"
 	CopilotBusinessChatURL = "https://api.business.githubcopilot.com"
 
-	GithubAPIURL      = "https://api.github.com"
-	GithubCopilotURL  = "https://api.github.com/copilot_internal/v2/token"
-	GithubDeviceURL   = "https://github.com/login/device/code"
-	GithubTokenURL    = "https://github.com/login/oauth/access_token"
-	GithubUserURL     = "https://api.github.com/user"
+	GithubCopilotURL = "https://api.github.com/copilot_internal/v2/token"
+	GithubDeviceURL  = "https://github.com/login/device/code"
+	GithubTokenURL   = "https://github.com/login/oauth/access_token"
+	GithubUserURL    = "https://api.github.com/user"
 )
 
 type ModelsResponse struct {
@@ -38,12 +37,13 @@ type CopilotTokenResponse struct {
 }
 
 type State struct {
-	mu           sync.RWMutex
-	GithubToken  string
-	CopilotToken string
-	AccountType  string
-	Models       *ModelsResponse
-	VSCodeVersion string
+	mu             sync.RWMutex
+	GithubToken    string
+	CopilotToken   string
+	TokenExpiresAt int64 // Unix timestamp when the Copilot token expires
+	AccountType    string
+	Models         *ModelsResponse
+	VSCodeVersion  string
 }
 
 func NewState() *State {
@@ -90,12 +90,5 @@ func GithubHeaders(state *State) http.Header {
 	h.Set("Authorization", "token "+state.GithubToken)
 	h.Set("Accept", "application/json")
 	h.Set("User-Agent", fmt.Sprintf("GitHubCopilotChat/%s", CopilotVersion))
-	return h
-}
-
-func StandardHeaders() http.Header {
-	h := make(http.Header)
-	h.Set("Content-Type", "application/json")
-	h.Set("Accept", "application/json")
 	return h
 }

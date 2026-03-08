@@ -21,9 +21,10 @@ type Account struct {
 }
 
 type PoolConfig struct {
-	Enabled  bool   `json:"enabled"`
-	Strategy string `json:"strategy"`
-	ApiKey   string `json:"apiKey"`
+	Enabled      bool   `json:"enabled"`
+	Strategy     string `json:"strategy"`
+	ApiKey       string `json:"apiKey"`
+	RateLimitRPM int    `json:"rateLimitRPM,omitempty"` // Per-account rate limit (requests per minute), 0 = no limit
 }
 
 type accountStore struct {

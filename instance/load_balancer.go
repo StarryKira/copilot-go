@@ -1,8 +1,10 @@
 package instance
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"copilot-go/store"
 )
@@ -37,6 +39,10 @@ func SelectAccount(strategy string, exclude map[string]bool) (*store.Account, er
 	switch strategy {
 	case "priority":
 		return selectByPriority(available), nil
+	case "least-used":
+		return selectLeastUsed(available), nil
+	case "smart":
+		return selectSmart(available), nil
 	default: // round-robin
 		return selectRoundRobin(available), nil
 	}
@@ -57,6 +63,55 @@ func selectByPriority(accounts []store.Account) *store.Account {
 		}
 	}
 	return &best
+}
+
+// selectLeastUsed picks the account with the fewest requests in the current window.
+func selectLeastUsed(accounts []store.Account) *store.Account {
+	best := &accounts[0]
+	bestCount := GetWindowRequestCount(accounts[0].ID)
+
+	for i := 1; i < len(accounts); i++ {
+		count := GetWindowRequestCount(accounts[i].ID)
+		if count < bestCount {
+			bestCount = count
+			best = &accounts[i]
+		}
+	}
+	return best
+}
+
+// selectSmart picks the account with the lowest weighted score.
+// Score = requestCount + penalty if recently 429'd.
+// The 429 penalty decays over 5 minutes.
+func selectSmart(accounts []store.Account) *store.Account {
+	const penaltyDuration = 5 * time.Minute
+	const maxPenalty = 1000.0
+
+	now := time.Now()
+	best := &accounts[0]
+	bestScore := math.MaxFloat64
+
+	for i := range accounts {
+		count := float64(GetWindowRequestCount(accounts[i].ID))
+		penalty := 0.0
+
+		last429 := GetLast429Time(accounts[i].ID)
+		if !last429.IsZero() {
+			elapsed := now.Sub(last429)
+			if elapsed < penaltyDuration {
+				// Linear decay: full penalty at 0s, 0 at penaltyDuration.
+				ratio := 1.0 - elapsed.Seconds()/penaltyDuration.Seconds()
+				penalty = maxPenalty * ratio
+			}
+		}
+
+		score := count + penalty
+		if score < bestScore {
+			bestScore = score
+			best = &accounts[i]
+		}
+	}
+	return best
 }
 
 // instances and mu are defined in manager.go but referenced here

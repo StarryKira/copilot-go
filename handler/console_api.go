@@ -85,6 +85,10 @@ func RegisterConsoleAPI(r *gin.Engine, proxyPort int) {
 
 	// Copilot models
 	protected.GET("/copilot-models", handleGetCopilotModels)
+
+	// Proxy usage stats (from in-memory tracking)
+	protected.GET("/usage", handleGetProxyUsage)
+	protected.GET("/usage/:id", handleGetProxyAccountUsage)
 }
 
 func adminAuthMiddleware() gin.HandlerFunc {
@@ -438,6 +442,14 @@ func handleUpdatePool(c *gin.Context) {
 			existing.Strategy = s
 		}
 	}
+	if v, ok := updates["rateLimitRPM"]; ok {
+		switch rv := v.(type) {
+		case float64:
+			existing.RateLimitRPM = int(rv)
+		case int:
+			existing.RateLimitRPM = rv
+		}
+	}
 
 	// Generate a key if pool is being enabled and has no key yet
 	if existing.Enabled && existing.ApiKey == "" {
@@ -452,6 +464,10 @@ func handleUpdatePool(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Sync per-account rate limiter.
+	instance.SetPerAccountRPM(existing.RateLimitRPM)
+
 	c.JSON(http.StatusOK, existing)
 }
 
@@ -572,6 +588,19 @@ func findWebDist() string {
 	return ""
 }
 
+// --- Proxy usage handlers ---
+
+func handleGetProxyUsage(c *gin.Context) {
+	snapshots := instance.GetAllUsageSnapshots()
+	c.JSON(http.StatusOK, snapshots)
+}
+
+func handleGetProxyAccountUsage(c *gin.Context) {
+	id := c.Param("id")
+	snapshot := instance.GetUsageSnapshot(id)
+	c.JSON(http.StatusOK, snapshot)
+}
+
 // fetchCopilotUsage fetches usage/quota data for a running account from GitHub Copilot API.
 func fetchCopilotUsage(accountID string) (interface{}, error) {
 	state := instance.GetInstanceState(accountID)
@@ -592,7 +621,7 @@ func fetchCopilotUsage(accountID string) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("copilot user API returned status %d", resp.StatusCode)

@@ -43,10 +43,17 @@ const en = {
   enable: "Enable",
   roundRobin: "Round Robin",
   priority: "Priority",
+  leastUsed: "Least Used",
+  smart: "Smart",
   roundRobinDesc: "Evenly distribute across accounts",
   priorityDesc: "Prefer higher-priority accounts first",
+  leastUsedDesc: "Prefer accounts with fewest recent requests",
+  smartDesc: "Balance usage and avoid recently rate-limited accounts",
   poolKey: "Pool Key:",
   baseUrl: "Base URL:",
+  rateLimitRPM: "Rate Limit (RPM):",
+  rateLimitRPMDesc: "Per-account requests per minute limit, 0 = unlimited",
+  rateLimitPlaceholder: "0 = no limit",
 
   // Account Card
   apiKey: "API Key:",
@@ -101,6 +108,17 @@ const en = {
   colResets: "Resets",
   totalSummary: "Total",
   noRunningAccounts: "No running accounts",
+
+  // Proxy Usage
+  proxyUsage: "Proxy Usage Stats",
+  proxyUsageDesc: "Real-time request statistics from the proxy (1-hour window)",
+  queryProxyUsage: "Query Proxy Usage",
+  colTotalReqs: "Total Requests",
+  colFailedReqs: "Failed",
+  colLast429: "Last 429",
+  noProxyUsage: "No proxy usage data yet",
+  proxyWindow: "Window:",
+  never: "Never",
 
   // Model Mapping
   modelMapping: "Model ID Mapping",
@@ -170,10 +188,17 @@ const zh: Translations = {
   enable: "启用",
   roundRobin: "轮询",
   priority: "优先级",
+  leastUsed: "最少使用",
+  smart: "智能",
   roundRobinDesc: "均匀分配到各账户",
   priorityDesc: "优先使用高优先级账户",
+  leastUsedDesc: "优先使用近期请求最少的账户",
+  smartDesc: "综合使用量和限速状态进行智能分配",
   poolKey: "池密钥：",
   baseUrl: "基础 URL：",
+  rateLimitRPM: "速率限制 (RPM)：",
+  rateLimitRPMDesc: "每账户每分钟请求数限制，0 = 不限制",
+  rateLimitPlaceholder: "0 = 不限制",
 
   // Account Card
   apiKey: "API 密钥：",
@@ -228,6 +253,17 @@ const zh: Translations = {
   colResets: "重置日期",
   totalSummary: "合计",
   noRunningAccounts: "暂无运行中的账户",
+
+  // Proxy Usage
+  proxyUsage: "代理用量统计",
+  proxyUsageDesc: "代理实时请求统计（1 小时滑动窗口）",
+  queryProxyUsage: "查询代理用量",
+  colTotalReqs: "总请求数",
+  colFailedReqs: "失败",
+  colLast429: "最近 429",
+  noProxyUsage: "暂无代理用量数据",
+  proxyWindow: "窗口：",
+  never: "从未",
 
   // Model Mapping
   modelMapping: "模型 ID 映射",

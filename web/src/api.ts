@@ -51,8 +51,16 @@ interface QuotaDetail {
 
 export interface PoolConfig {
   enabled: boolean
-  strategy: "round-robin" | "priority"
+  strategy: "round-robin" | "priority" | "least-used" | "smart"
   apiKey: string
+  rateLimitRPM?: number
+}
+
+export interface ProxyUsageSnapshot {
+  totalRequests: number
+  failedRequests: number
+  last429At?: string
+  windowSeconds: number
 }
 
 export interface DeviceCodeResponse {
@@ -205,4 +213,11 @@ export const api = {
 
   getCopilotModels: () =>
     request<{ models: Array<CopilotModel> }>("/copilot-models"),
+
+  // Proxy usage stats (in-memory tracking)
+  getProxyUsage: () =>
+    request<Record<string, ProxyUsageSnapshot>>("/usage"),
+
+  getProxyAccountUsage: (id: string) =>
+    request<ProxyUsageSnapshot>(`/usage/${id}`),
 }

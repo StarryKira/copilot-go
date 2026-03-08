@@ -16,14 +16,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// CompletionsHandler proxies chat completion requests to Copilot.
-func CompletionsHandler(c *gin.Context, state *config.State) {
-	bodyBytes, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
-		return
-	}
-
+// DoCompletionsProxy performs the upstream request for completions and returns the raw response.
+// The caller is responsible for closing resp.Body.
+func DoCompletionsProxy(_ *gin.Context, state *config.State, bodyBytes []byte) (*http.Response, error) {
 	// Apply model mapping
 	var payload map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &payload); err == nil {
@@ -33,14 +28,13 @@ func CompletionsHandler(c *gin.Context, state *config.State) {
 		}
 	}
 
-	resp, err := ProxyRequestWithBytes(state, "POST", "/chat/completions", bodyBytes, nil, false)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", err)})
-		return
-	}
+	return ProxyRequestWithBytes(state, "POST", "/chat/completions", bodyBytes, nil, false)
+}
+
+// ForwardCompletionsResponse writes the upstream response to the client.
+func ForwardCompletionsResponse(c *gin.Context, resp *http.Response) {
 	defer func() { _ = resp.Body.Close() }()
 
-	// Check if streaming
 	contentType := resp.Header.Get("Content-Type")
 	isStream := strings.Contains(contentType, "text/event-stream")
 
@@ -51,15 +45,13 @@ func CompletionsHandler(c *gin.Context, state *config.State) {
 		c.Header("X-Accel-Buffering", "no")
 		c.Status(resp.StatusCode)
 
-		// Pipe upstream SSE directly to client with large buffer
-		reader := bufio.NewReaderSize(resp.Body, 10*1024*1024) // 10MB buffer
+		reader := bufio.NewReaderSize(resp.Body, 10*1024*1024)
 		c.Stream(func(w io.Writer) bool {
 			line, err := reader.ReadBytes('\n')
 			if len(line) > 0 {
 				if _, writeErr := w.Write(line); writeErr != nil {
 					return false
 				}
-				// Flush after each line to prevent buffering delays
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
 				}
@@ -73,7 +65,6 @@ func CompletionsHandler(c *gin.Context, state *config.State) {
 			return true
 		})
 	} else {
-		// Non-streaming: read full response and forward
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
@@ -97,7 +88,6 @@ func ModelsHandler(c *gin.Context, state *config.State) {
 		return
 	}
 
-	// Apply display ID mapping
 	mapped := config.ModelsResponse{
 		Object: models.Object,
 		Data:   make([]config.ModelEntry, len(models.Data)),
@@ -114,15 +104,8 @@ func ModelsHandler(c *gin.Context, state *config.State) {
 	c.JSON(http.StatusOK, mapped)
 }
 
-// EmbeddingsHandler proxies embedding requests to Copilot.
-func EmbeddingsHandler(c *gin.Context, state *config.State) {
-	bodyBytes, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
-		return
-	}
-
-	// Apply model mapping
+// DoEmbeddingsProxy performs the upstream request for embeddings.
+func DoEmbeddingsProxy(state *config.State, bodyBytes []byte) (*http.Response, error) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &payload); err == nil {
 		if model, ok := payload["model"].(string); ok {
@@ -131,11 +114,11 @@ func EmbeddingsHandler(c *gin.Context, state *config.State) {
 		}
 	}
 
-	resp, err := ProxyRequestWithBytes(state, "POST", "/embeddings", bodyBytes, nil, false)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", err)})
-		return
-	}
+	return ProxyRequestWithBytes(state, "POST", "/embeddings", bodyBytes, nil, false)
+}
+
+// ForwardEmbeddingsResponse writes the upstream embeddings response to the client.
+func ForwardEmbeddingsResponse(c *gin.Context, resp *http.Response) {
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
@@ -146,38 +129,35 @@ func EmbeddingsHandler(c *gin.Context, state *config.State) {
 	c.Data(resp.StatusCode, "application/json", body)
 }
 
-// MessagesHandler handles Anthropic /v1/messages endpoint.
-func MessagesHandler(c *gin.Context, state *config.State) {
-	bodyBytes, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
-		return
-	}
-
+// DoMessagesProxy performs the upstream request for Anthropic messages.
+// Returns the raw response. bodyBytes is the original Anthropic payload.
+func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte) (*http.Response, error) {
 	var anthropicPayload anthropic.AnthropicMessagesPayload
 	if err := json.Unmarshal(bodyBytes, &anthropicPayload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid request: %v", err)})
-		return
+		return nil, fmt.Errorf("invalid request: %v", err)
 	}
 
-	// Check for vision content
 	hasVision := checkVisionContent(anthropicPayload)
-
-	// Translate to OpenAI format
 	openaiPayload := anthropic.TranslateToOpenAI(anthropicPayload)
 
 	openaiBytes, err := json.Marshal(openaiPayload)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to marshal request"})
-		return
+		return nil, fmt.Errorf("failed to marshal request: %v", err)
 	}
 
-	resp, err := ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, nil, hasVision)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", err)})
+	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, nil, hasVision)
+}
+
+// ForwardMessagesResponse writes the upstream response to the client in Anthropic format.
+// originalBody is the original Anthropic request (used to determine stream mode).
+func ForwardMessagesResponse(c *gin.Context, resp *http.Response, originalBody []byte) {
+	defer func() { _ = resp.Body.Close() }()
+
+	var anthropicPayload anthropic.AnthropicMessagesPayload
+	if err := json.Unmarshal(originalBody, &anthropicPayload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid request: %v", err)})
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
 
 	if anthropicPayload.Stream {
 		handleAnthropicStream(c, resp)
@@ -233,7 +213,6 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response) {
 	scanner.Buffer(make([]byte, 0, 10*1024*1024), 10*1024*1024)
 
 	for scanner.Scan() {
-		// Check if client disconnected
 		select {
 		case <-clientGone:
 			log.Printf("[Stream] Client disconnected, stopping stream")
@@ -276,7 +255,6 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response) {
 		}
 	}
 
-	// Scanner finished — check why
 	if err := scanner.Err(); err != nil {
 		log.Printf("[Stream] Scanner error: %v", err)
 		_ = writeSSE(w, "error", map[string]interface{}{
@@ -287,7 +265,6 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response) {
 			},
 		})
 	} else {
-		// EOF without [DONE] — upstream closed unexpectedly
 		log.Printf("[Stream] Upstream closed without [DONE], sending message_stop")
 		_ = writeSSE(w, "message_stop", map[string]string{"type": "message_stop"})
 	}
@@ -319,22 +296,18 @@ func CountTokensHandler(c *gin.Context, _ *config.State) {
 		return
 	}
 
-	// Rough estimation: ~4 chars per token
 	totalChars := 0
 
-	// Count system
 	if payload.System != nil {
 		sysData, _ := json.Marshal(payload.System)
 		totalChars += len(string(sysData))
 	}
 
-	// Count messages
 	for _, msg := range payload.Messages {
 		msgData, _ := json.Marshal(msg.Content)
 		totalChars += len(string(msgData))
 	}
 
-	// Count tools
 	if len(payload.Tools) > 0 {
 		toolData, _ := json.Marshal(payload.Tools)
 		totalChars += len(string(toolData))
