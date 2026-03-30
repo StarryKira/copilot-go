@@ -28,9 +28,8 @@ func RegisterConsoleAPI(r *gin.Engine, proxyPort int) {
 	if webDist != "" {
 		// Development: serve from filesystem
 		r.Static("/assets", filepath.Join(webDist, "assets"))
-		r.StaticFile("/", filepath.Join(webDist, "index.html"))
 		r.NoRoute(func(c *gin.Context) {
-			if !strings.HasPrefix(c.Request.URL.Path, "/api") {
+			if !strings.HasPrefix(c.Request.URL.Path, "/api") && !strings.HasPrefix(c.Request.URL.Path, "/assets") {
 				c.File(filepath.Join(webDist, "index.html"))
 			}
 		})
@@ -42,12 +41,14 @@ func RegisterConsoleAPI(r *gin.Engine, proxyPort int) {
 		} else {
 			assetsFS, _ := fs.Sub(distFS, "assets")
 			r.StaticFS("/assets", http.FS(assetsFS))
-			r.GET("/", func(c *gin.Context) {
-				c.FileFromFS("/index.html", http.FS(distFS))
-			})
 			r.NoRoute(func(c *gin.Context) {
-				if !strings.HasPrefix(c.Request.URL.Path, "/api") {
-					c.FileFromFS("/index.html", http.FS(distFS))
+				if !strings.HasPrefix(c.Request.URL.Path, "/api") && !strings.HasPrefix(c.Request.URL.Path, "/assets") {
+					data, err := fs.ReadFile(distFS, "index.html")
+					if err != nil {
+						c.String(http.StatusInternalServerError, "failed to load index.html")
+						return
+					}
+					c.Data(http.StatusOK, "text/html; charset=utf-8", data)
 				}
 			})
 		}
