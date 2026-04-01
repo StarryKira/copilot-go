@@ -252,6 +252,49 @@ All data is stored in `~/.local/share/copilot-api/`:
 | `admin.json` | Admin password hash |
 | `model_map.json` | Model ID mappings |
 
+### Reverse Proxy (Nginx)
+
+When deploying behind a reverse proxy like Nginx, make sure to configure appropriate timeouts for long-running AI requests:
+
+```nginx
+server {
+    server_name your-domain.com;
+    client_max_body_size 10M;
+
+    # API proxy
+    location /v1/ {
+        proxy_pass http://127.0.0.1:4141;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering off;
+        proxy_cache off;
+        # Important: AI requests may take longer
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_connect_timeout 60s;
+    }
+
+    # Web console
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+**Note**: The `proxy_read_timeout` should be set high enough (e.g., 300s) to accommodate long-running AI requests and streaming responses.
+
 ### Credits
 
 Based on [ericc-ch/copilot-api](https://github.com/ericc-ch/copilot-api) (TypeScript/Bun), rewritten in Go with multi-account console mode.
@@ -441,6 +484,49 @@ Copilot 返回的模型 ID 不规范，映射功能支持双向转换：
 | `pool-config.json` | Pool 模式配置 |
 | `admin.json` | 管理员密码哈希 |
 | `model_map.json` | 模型 ID 映射表 |
+
+### 反向代理（Nginx）
+
+在使用 Nginx 等反向代理部署时，请确保为长时间运行的 AI 请求配置适当的超时设置：
+
+```nginx
+server {
+    server_name your-domain.com;
+    client_max_body_size 10M;
+
+    # API 代理
+    location /v1/ {
+        proxy_pass http://127.0.0.1:4141;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering off;
+        proxy_cache off;
+        # 重要：AI 请求可能需要较长时间
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_connect_timeout 60s;
+    }
+
+    # Web 控制台
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+**注意**：`proxy_read_timeout` 应设置足够长（如 300s），以适应长时间运行的 AI 请求和流式响应。
 
 ### 致谢
 
