@@ -359,14 +359,12 @@ func buildTransport(streaming bool, proxyRawURL string) *http.Transport {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		MaxConnsPerHost:       100,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   50,
 	}
 	if streaming {
-		t.MaxIdleConns = 100
-		t.MaxIdleConnsPerHost = 20
 		t.ResponseHeaderTimeout = 2 * time.Minute
-	} else {
-		t.MaxIdleConns = 50
-		t.MaxIdleConnsPerHost = 10
 	}
 	if proxyRawURL != "" {
 		if parsed, err := url.Parse(proxyRawURL); err == nil {
@@ -383,7 +381,7 @@ func rebuildHTTPClients() {
 		Transport: buildTransport(true, pURL),
 	}
 	nonStreaming := &http.Client{
-		Timeout:   15 * time.Second,
+		Timeout:   5 * time.Minute,
 		Transport: buildTransport(false, pURL),
 	}
 	clientMu.Lock()
