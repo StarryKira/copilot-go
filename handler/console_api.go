@@ -359,12 +359,12 @@ func handleStopAccount(c *gin.Context) {
 
 func handleGetAccountUsage(c *gin.Context) {
 	id := c.Param("id")
-	user, err := instance.GetUser(id)
+	usage, err := fetchCopilotUsage(id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, user)
+	c.JSON(http.StatusOK, usage)
 }
 
 // --- Device flow handlers ---
